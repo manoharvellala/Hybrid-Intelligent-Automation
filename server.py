@@ -32,13 +32,15 @@ import os
 #     "port": 5432
 # }
 
+
+
 DB_CONFIG = {
-    "dbname": os.getenv("PGDATABASE", "stigdb"),
-    "user": os.getenv("PGUSER", "stig_user"),
-    "password": os.getenv("PGPASSWORD", ""),
-    "host": os.getenv("PGHOST", "localhost"),
-    "port": int(os.getenv("PGPORT", "5432")),
-    "sslmode": os.getenv("PGSSLMODE", "require"),
+    "dbname":   os.getenv("PGDATABASE", "stigdb"),
+    "user":     os.getenv("PGUSER", "stig_user"),
+    "password": os.getenv("PGPASSWORD", ""),           # <- from Render env
+    "host":     os.getenv("PGHOST", "localhost"),
+    "port":     int(os.getenv("PGPORT", "5432")),
+    "sslmode":  os.getenv("PGSSLMODE", "require"),
 }
 
 def get_db_connection():
