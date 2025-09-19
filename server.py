@@ -441,12 +441,8 @@ async def db_ping() -> dict:
 
 if __name__ == "__main__":
     ensure_schema()
-    print("DB cfg:", DB_CONFIG.get("host"), DB_CONFIG.get("dbname"), DB_CONFIG.get("user"), DB_CONFIG.get("sslmode"))
     print("🚀 STIG Automation Server running with PostgreSQL backend...")
-
-    # IMPORTANT: with fastmcp 2.12.3, run() supports transport + port only.
-    # Render terminates TLS -> external clients use HTTPS.
     mcp.run(
-        transport="http",                      # or "sse"
-        port=int(os.getenv("PORT", "8000"))    # Render injects PORT
+        transport="http",                    # or "sse"
+        port=int(os.getenv("PORT", "8000"))  # Render injects PORT
     )
