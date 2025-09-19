@@ -22,13 +22,23 @@ from mcp.server.fastmcp import FastMCP
 # Initialize FastMCP server
 mcp = FastMCP("STIG-Automation-Server")
 
+import os
 # Database connection details
+# DB_CONFIG = {
+#     "dbname": "stigdb",
+#     "user": "stig_user",
+#     "password": "root",  # Replace securely in production
+#     "host": "localhost",
+#     "port": 5432
+# }
+
 DB_CONFIG = {
-    "dbname": "stigdb",
-    "user": "stig_user",
-    "password": "root",  # Replace securely in production
-    "host": "localhost",
-    "port": 5432
+    "dbname": os.getenv("PGDATABASE", "stigdb"),
+    "user": os.getenv("PGUSER", "stig_user"),
+    "password": os.getenv("PGPASSWORD", ""),
+    "host": os.getenv("PGHOST", "localhost"),
+    "port": int(os.getenv("PGPORT", "5432")),
+    "sslmode": os.getenv("PGSSLMODE", "require"),
 }
 
 def get_db_connection():
@@ -501,4 +511,11 @@ async def get_rule_resource(rule_id: str) -> Optional[Dict]:
 if __name__ == "__main__":
     ensure_schema()
     print("🚀 STIG Automation Server running with PostgreSQL backend...")
-    mcp.run(transport="stdio")
+
+    # Prefer Streamable HTTP for remote clients:
+    mcp.run(
+        transport="http",                      # or "sse" if you prefer
+        host="0.0.0.0",
+        port=int(os.getenv("PORT", "8000")),
+        path="/mcp"                            # public endpoint path
+    )
