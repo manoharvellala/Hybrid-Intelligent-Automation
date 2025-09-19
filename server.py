@@ -442,7 +442,4 @@ async def db_ping() -> dict:
 if __name__ == "__main__":
     ensure_schema()
     print("🚀 STIG Automation Server running with PostgreSQL backend...")
-    mcp.run(
-        transport="http",                    # or "sse"
-        port=int(os.getenv("PORT", "8000"))  # Render injects PORT
-    )
+  
