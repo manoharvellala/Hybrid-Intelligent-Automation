@@ -1,0 +1,5 @@
+mcp             # or mcp>=x.y if you pin
+fastmcp
+psycopg2-binary
+pandas
+openpyxl
