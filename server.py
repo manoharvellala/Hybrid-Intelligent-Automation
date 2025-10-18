@@ -7,6 +7,7 @@ STIG Automation Server using FastMCP - PostgreSQL Backed
 
 import os
 import json
+import re
 from typing import List, Dict, Optional
 
 import psycopg2
@@ -24,6 +25,74 @@ from fastmcp import FastMCP
 
 # Initialize FastMCP server
 mcp = FastMCP("STIG-Automation-Server")
+
+# -------------------- Script output directory (for .sh files) --------------------
+SCRIPTS_DIR = os.getenv("STIG_SCRIPTS_DIR", "/tmp/stig_scripts")
+os.makedirs(SCRIPTS_DIR, exist_ok=True)
+
+# Regex to capture fenced code blocks like ```bash ... ```
+_CODEBLOCK_RE = re.compile(r"```(?:bash|shell|sh)?\s*(?P<body>[\s\S]*?)```", re.IGNORECASE)
+
+def _extract_script_text(text_or_json: str) -> str:
+    """
+    Accepts:
+      - raw text
+      - fenced code block: ```bash ... ```
+      - JSON: {"commands":[...]} or {"script":"..."}
+    Returns a clean script body (no shebang).
+    """
+    # Try JSON shapes first
+    try:
+        obj = json.loads(text_or_json)
+        if isinstance(obj, dict):
+            if "commands" in obj and isinstance(obj["commands"], list):
+                cmds = [str(x).rstrip() for x in obj["commands"] if str(x).strip()]
+                return ("\n".join(cmds)).rstrip() + "\n"
+            if "script" in obj and isinstance(obj["script"], str):
+                return obj["script"].rstrip() + "\n"
+    except Exception:
+        pass
+
+    # Fenced code?
+    m = _CODEBLOCK_RE.search(text_or_json)
+    body = m.group("body") if m else text_or_json
+
+    # Normalize lines; keep comments; strip leading "$ " prompts
+    out_lines = []
+    for line in body.splitlines():
+        s = line.rstrip("\n")
+        if s.startswith("$ "):
+            s = s[2:]
+        out_lines.append(s)
+    return ("\n".join(out_lines)).rstrip() + "\n"
+
+def _write_script_file(filename: str, script_body: str, append: bool = True, add_header: bool = True) -> str:
+    """
+    Write or append script_body into a .sh file.
+    - If filename is relative, it is saved under SCRIPTS_DIR.
+    - Ensures executable bit.
+    Returns the absolute path to the file.
+    """
+    if not filename.endswith(".sh"):
+        filename += ".sh"
+    path = filename if filename.startswith("/") else os.path.join(SCRIPTS_DIR, filename)
+
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    mode = "a" if append and os.path.exists(path) else "w"
+
+    header = "#!/usr/bin/env bash\nset -euo pipefail\n\n" if add_header and mode == "w" else ""
+    with open(path, mode, encoding="utf-8") as f:
+        if header:
+            f.write(header)
+        f.write(script_body)
+
+    # Make it executable
+    try:
+        os.chmod(path, 0o700)
+    except Exception:
+        pass
+
+    return path
 
 # ------------- Database config (read from env on Render) -------------
 DB_CONFIG = {
@@ -400,6 +469,64 @@ async def export_controls_to_excel(path: str) -> Dict:
     df.to_excel(path, index=False)
     return {"ok": True, "path": path, "rows": len(data)}
 
+# -------------------- NEW: MCP tools to SAVE .sh files (no execution) --------------------
+
+@mcp.tool()
+async def write_script(
+    filename: str,
+    text_or_json: str,
+    append: bool = True,
+    add_header: bool = True
+) -> Dict:
+    """
+    Save LLM/MCP output to a .sh file (no execution).
+    Args:
+      - filename: relative name (saved under $STIG_SCRIPTS_DIR) or absolute path; '.sh' auto-added if missing.
+      - text_or_json: raw text, fenced ```bash``` code, or JSON {commands:[...]} / {script:"..."}.
+      - append: append to file if it exists; otherwise overwrite.
+      - add_header: when creating a new file, add '#!/usr/bin/env bash' and 'set -euo pipefail'.
+    Returns:
+      {"path": <absolute path>, "bytes_written": <int>, "append": <bool>}
+    """
+    body = _extract_script_text(text_or_json)
+    path = _write_script_file(filename, body, append=append, add_header=add_header)
+    return {"path": path, "bytes_written": len(body.encode("utf-8")), "append": append}
+
+@mcp.tool()
+async def save_stig_fix_to_file(
+    rule_id: str,
+    filename: Optional[str] = None,
+    append: bool = False,
+    add_header: bool = True
+) -> Dict:
+    """
+    Fetch the STIG rule's 'fix' and save it to a .sh file (no execution).
+    If filename is None, uses: $STIG_SCRIPTS_DIR/<rule_id>.sh (overwritten unless append=True).
+    Returns:
+      {"rule_id":..., "path":..., "bytes_written":...}
+    """
+    # Fetch rule
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM stig_rules WHERE id = %s", (rule_id,))
+    row = cur.fetchone()
+    if not row:
+        cur.close(); conn.close()
+        return {"error": "Rule not found", "rule_id": rule_id}
+    cols = [d[0] for d in cur.description]
+    rule = dict(zip(cols, row))
+    cur.close(); conn.close()
+
+    fix = rule.get("fix")
+    if not fix or not str(fix).strip():
+        return {"error": "No fix script found on rule", "rule_id": rule_id}
+
+    body = _extract_script_text(fix if isinstance(fix, str) else json.dumps(fix))
+    if filename is None:
+        filename = f"{rule_id}.sh"
+    path = _write_script_file(filename, body, append=append, add_header=add_header)
+    return {"rule_id": rule_id, "path": path, "bytes_written": len(body.encode("utf-8")), "append": append}
+
 # -------------------- MCP resources --------------------
 
 @mcp.resource("stig://rules")
@@ -442,4 +569,3 @@ async def db_ping() -> dict:
 if __name__ == "__main__":
     ensure_schema()
     print("🚀 STIG Automation Server running with PostgreSQL backend...")
-  
