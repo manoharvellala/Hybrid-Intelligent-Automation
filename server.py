@@ -26,9 +26,12 @@ from fastmcp import FastMCP
 # Initialize FastMCP server
 mcp = FastMCP("STIG-Automation-Server")
 
-# -------------------- Script output directory (for .sh files) --------------------
-SCRIPTS_DIR = os.getenv("STIG_SCRIPTS_DIR", "/tmp/stig_scripts")
-os.makedirs(SCRIPTS_DIR, exist_ok=True)
+# -------------------- Where to write .sh files --------------------
+# We cannot automatically see the *client's* cwd from the server process.
+# So we use:
+#   1) CLIENT_PWD env var (set by client.py), or
+#   2) the server's current working directory.
+BASE_DIR = os.getenv("CLIENT_PWD") or os.getcwd()
 
 # Regex to capture fenced code blocks like ```bash ... ```
 _CODEBLOCK_RE = re.compile(r"```(?:bash|shell|sh)?\s*(?P<body>[\s\S]*?)```", re.IGNORECASE)
@@ -66,18 +69,27 @@ def _extract_script_text(text_or_json: str) -> str:
         out_lines.append(s)
     return ("\n".join(out_lines)).rstrip() + "\n"
 
-def _write_script_file(filename: str, script_body: str, append: bool = True, add_header: bool = True) -> str:
+def _write_script_file(
+    filename: str,
+    script_body: str,
+    append: bool = True,
+    add_header: bool = True,
+    base_dir: Optional[str] = None
+) -> str:
     """
     Write or append script_body into a .sh file.
-    - If filename is relative, it is saved under SCRIPTS_DIR.
+    - If filename is relative, it is saved under base_dir (defaults to BASE_DIR).
+    - Absolute paths are respected.
     - Ensures executable bit.
     Returns the absolute path to the file.
     """
     if not filename.endswith(".sh"):
         filename += ".sh"
-    path = filename if filename.startswith("/") else os.path.join(SCRIPTS_DIR, filename)
 
-    os.makedirs(os.path.dirname(path), exist_ok=True)
+    root = base_dir or BASE_DIR
+    path = filename if os.path.isabs(filename) else os.path.join(root, filename)
+
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     mode = "a" if append and os.path.exists(path) else "w"
 
     header = "#!/usr/bin/env bash\nset -euo pipefail\n\n" if add_header and mode == "w" else ""
@@ -92,7 +104,7 @@ def _write_script_file(filename: str, script_body: str, append: bool = True, add
     except Exception:
         pass
 
-    return path
+    return os.path.abspath(path)
 
 # ------------- Database config (read from env on Render) -------------
 DB_CONFIG = {
@@ -476,34 +488,42 @@ async def write_script(
     filename: str,
     text_or_json: str,
     append: bool = True,
-    add_header: bool = True
+    add_header: bool = True,
+    base_dir: Optional[str] = None
 ) -> Dict:
     """
     Save LLM/MCP output to a .sh file (no execution).
     Args:
-      - filename: relative name (saved under $STIG_SCRIPTS_DIR) or absolute path; '.sh' auto-added if missing.
+      - filename: relative or absolute; '.sh' auto-added if missing.
       - text_or_json: raw text, fenced ```bash``` code, or JSON {commands:[...]} / {script:"..."}.
       - append: append to file if it exists; otherwise overwrite.
       - add_header: when creating a new file, add '#!/usr/bin/env bash' and 'set -euo pipefail'.
+      - base_dir: directory to resolve relative filenames against (defaults to CLIENT_PWD or server cwd).
     Returns:
-      {"path": <absolute path>, "bytes_written": <int>, "append": <bool>}
+      {"path": <absolute path>, "bytes_written": <int>, "append": <bool>, "base_dir": <resolved>}
     """
     body = _extract_script_text(text_or_json)
-    path = _write_script_file(filename, body, append=append, add_header=add_header)
-    return {"path": path, "bytes_written": len(body.encode("utf-8")), "append": append}
+    path = _write_script_file(filename, body, append=append, add_header=add_header, base_dir=base_dir)
+    return {
+        "path": path,
+        "bytes_written": len(body.encode("utf-8")),
+        "append": append,
+        "base_dir": os.path.dirname(path)
+    }
 
 @mcp.tool()
 async def save_stig_fix_to_file(
     rule_id: str,
     filename: Optional[str] = None,
     append: bool = False,
-    add_header: bool = True
+    add_header: bool = True,
+    base_dir: Optional[str] = None
 ) -> Dict:
     """
     Fetch the STIG rule's 'fix' and save it to a .sh file (no execution).
-    If filename is None, uses: $STIG_SCRIPTS_DIR/<rule_id>.sh (overwritten unless append=True).
+    If filename is None, uses: "<rule_id>.sh" under base_dir (CLIENT_PWD or server cwd).
     Returns:
-      {"rule_id":..., "path":..., "bytes_written":...}
+      {"rule_id":..., "path":..., "bytes_written":..., "base_dir": ...}
     """
     # Fetch rule
     conn = get_db_connection()
@@ -524,8 +544,14 @@ async def save_stig_fix_to_file(
     body = _extract_script_text(fix if isinstance(fix, str) else json.dumps(fix))
     if filename is None:
         filename = f"{rule_id}.sh"
-    path = _write_script_file(filename, body, append=append, add_header=add_header)
-    return {"rule_id": rule_id, "path": path, "bytes_written": len(body.encode("utf-8")), "append": append}
+    path = _write_script_file(filename, body, append=append, add_header=add_header, base_dir=base_dir)
+    return {
+        "rule_id": rule_id,
+        "path": path,
+        "bytes_written": len(body.encode("utf-8")),
+        "append": append,
+        "base_dir": os.path.dirname(path)
+    }
 
 # -------------------- MCP resources --------------------
 
@@ -568,4 +594,4 @@ async def db_ping() -> dict:
 
 if __name__ == "__main__":
     ensure_schema()
-    print("🚀 STIG Automation Server running with PostgreSQL backend...")
+    print(f"🚀 STIG Automation Server running. BASE_DIR for scripts: {BASE_DIR}")
